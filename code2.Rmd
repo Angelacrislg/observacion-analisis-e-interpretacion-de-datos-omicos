@@ -1,0 +1,947 @@
+---
+title: "01-Analysis-RNA-seq"
+author: "Angela luque Garcia"
+date: "09/02/2025"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, dpi = 300,
+  base.dir = ".", 
+  # fig.path = "", 
+  fig.align = "center", 
+  fig.width = 7, 
+  fig.height = 4
+)
+```
+
+# Trained innate immunity, long-lasting epigenetic modulation, and skewed myelopoiesis by heme.
+
+## Introducción
+
+El artiulo porpuesto se enfoca en el concepto inmunologico de la **inmunidad entrenada**, que describe la capacidad de las celulas del sistema inmune para desarrolla una memoria a largo plazo atraves de cambios epigeneticos y transcripcioneles. Este fenomeno, se encuentra asociado con patrones moleculares patogenos y evaluado en el estudio desde un aperspectiva novedosa:la inducción por moléculas derivadas del hospedador, específicamente el **hemo extracelular**.
+
+El hemo, liberado durante procesos como la hemólisis o daño tisular, actúa como una señal de peligro (alarmina) que modula las respuestas de las células mieloides. Este estudio propone que el hemo no solo activa respuestas inflamatorias a corto plazo, sino que también induce modificaciones duraderas en las células madre hematopoyéticas (HSPCs) y progenitoras, lo que afecta la composición y función del sistema inmune a largo plazo.
+
+Para explorar esta hipótesis, los autores desarrollaron un enfoque experimental integral, combinando análisis **in vitro** en células humanas y estudios **in vivo** en modelos murinos. La metodología incluyó técnicas avanzadas como **ChIP-seq**, **RNA-seq** y análisis de accesibilidad cromatínica de células individuales (snATAC-seq), así como evaluaciones funcionales de resistencia a infecciones y respuesta inflamatoria. Este diseño permite comprender no solo los cambios inmediatos inducidos por el hemo, sino también las consecuencias epigenéticas y funcionales a largo plazo en el sistema hematopoyético.
+
+El estudio aporta evidencia robusta de que el hemo actúa como un inductor de inmunidad entrenada con efectos duales: puede mejorar la resistencia a infecciones bacterianas en el corto plazo, pero también exacerbar respuestas inflamatorias patológicas en contextos de inflamación estéril. Este descubrimiento tiene implicaciones significativas para comprender cómo los estímulos endógenos moldean la inmunidad innata y podrían informar nuevas estrategias terapéuticas para enfermedades inflamatorias e infecciosas.
+
+------------------------------------------------------------------------
+
+## Diseño Experimental
+
+### Modelos In Vitro
+
+-   Se utilizó un modelo de **inmunidad entrenada en monocitos humanos**.
+-   Tratamiento inicial con hemo a concentraciones relevantes clínicamente.
+-   Evaluación mediante:
+    -   **Secreción de TNF** y otros citocinas.
+    -   Estímulos secundarios con LPS.
+
+### Análisis Molecular
+
+1.  **Modificaciones Epigenéticas**:
+    -   Acetilación de histonas analizada por **ChIP-seq**.
+2.  **Cambios Transcripcionales**:
+    -   Estudio de la respuesta de genes mediante **RNA-seq**.
+3.  **Vías de Señalización**:
+    -   Evaluación de SYK y JNK mediante inhibidores específicos.
+
+------------------------------------------------------------------------
+
+## Metodología en Modelos Animales
+
+### Tratamiento
+
+-   Ratones tratados con hemo inyectado intraperitonealmente (2 mg/kg).
+
+### Análisis
+
+-   **Citometría de Flujo**: Identificación de células madre hematopoyéticas (HSPCs).
+-   **snATAC-seq**: Estudio de accesibilidad cromatínica en las HSPCs.
+-   **Pruebas Funcionales**:
+    -   Respuesta a **sepsis polimicrobiana**.
+    -   Liberación de citocinas e inflamación inducida.
+
+------------------------------------------------------------------------
+
+## Métodos Bioinformáticos
+
+-   Análisis de accesibilidad cromatínica con **UMAP** y **Cicero**.
+-   Identificación de conexiones potenciador-promotor.
+
+------------------------------------------------------------------------
+
+## Resultados Destacados
+
+1.  El hemo induce **modificaciones epigenéticas duraderas**.
+2.  Se observa un **sesgo hacia la mielopoyesis** en HSPCs.
+3.  Los efectos del hemo son contextuales:
+    -   **Protector**: Resistencia a infecciones bacterianas.
+    -   **Deleterio**: Exacerbación de inflamación estéril.
+
+------------------------------------------------------------------------
+
+# Analisis de datos.
+
+Se cargan y organizan las librerías a usar durante el análisis, también con ayuda de "getwd" obtenemos el path en el que se encuentra el archivo de nuestro proyecto junto a la información requerida para su correcto funcionamiento.
+
+```{r}
+# Manipulación y transformación de datos
+library(dplyr)       
+library(stringr)     
+
+# Análisis de expresión diferencial (RNA-seq)
+library(edgeR)       
+library(limma)       
+
+# Anotación de genes y enriquecimiento funcional
+library(org.Hs.eg.db) 
+library(AnnotationDbi) 
+library(clusterProfiler) 
+library(fgsea)  
+# Para análisis de enriquecimiento con fgsea
+library(msigdb)       
+library(biomaRt)     
+
+# Visualización de datos
+library(ggplot2)     
+library(ComplexHeatmap) 
+library(ggpubr)      
+library(RColorBrewer)  
+# Instalar 'patchwork' si no está instalado
+if (!requireNamespace("patchwork", quietly = TRUE)) {
+  install.packages("patchwork")
+}
+library(patchwork)
+
+
+# project path
+projectPath <- getwd() 
+source(file.path(projectPath, "src", "helperFunctions-2.R"))
+
+```
+
+Una vez guardado en “projectPath”, la ruta del archivo, podemos abrir la base de datos que se encuentra en la misma carpeta. esta carpeta fue obtenida de la base de datos GEO (<https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE111003>), el cual contiene muestras de monocitos estimulados con LPS Y β-glucano en diferentes tiempos (4 horas y 24 horas).
+
+Se lee el fichero y se extraen solo los documentos donde se encuentren BG,RMI y LPS a los diferentes tiempos de exposición.
+
+```{r}
+dataPath <- file.path(projectPath, "data", "GSE111003")
+
+# Lista todos los archivos en el directorio
+all_files <- list.files(dataPath, full.names = TRUE)
+
+archivos <- all_files[
+  grepl("T0",all_files) |
+  grepl("BG",all_files) & grepl("4h",all_files) |
+  grepl("BG",all_files) & grepl("24h",all_files) |
+  grepl("RPMI",all_files) & grepl("4h",all_files) |
+  grepl("RPMI",all_files) & grepl("24h",all_files) |
+  grepl("BG_d6_LPS",all_files) & !grepl("\\.bw",all_files)
+]
+
+```
+
+# Obtencion de matriz de exprecion.
+
+Se leen los archivos de interés y extraemos las columnas de “feature_id “y “unique_hits”, donde se encontraran los nombres y los niveles de expresión respectivamente.
+
+```{r}
+expresion_data <- list()
+muestras <- c()
+condiciones <- c()
+
+for (archivo in archivos) {
+  # Leer el archivo directamente
+  data <- tryCatch({
+    read.table(archivo, header = TRUE, stringsAsFactors = FALSE, sep = "\t", 
+               comment.char = "#", fill = TRUE)[, c("feature_id", "unique_hits")]
+  }, error = function(e) {
+    message("Error leyendo el archivo ", archivo, ": ", e$message)
+    return(NULL)
+  })
+  
+  if (!is.null(data)) {
+    # Almacenar los datos
+    expresion_data[[archivo]] <- data
+    
+    # Extraer el nombre de la muestra
+    muestra_nombre <- sub(".*_(HD\\d+|RPMI\\d+)_.*", "\\1", archivo)
+    muestras <- c(muestras, muestra_nombre)
+    
+    # Determinar la condición con prioridad explícita
+    if (grepl("T0", archivo)) {
+      condiciones <- c(condiciones, "T0")
+    } else if (grepl("24h", archivo)) {
+      if (grepl("BG", archivo)) {
+        condiciones <- c(condiciones, "BG_24h")
+      } else if (grepl("RPMI", archivo)) {
+        condiciones <- c(condiciones, "RPMI_24h")
+      }
+    } else if (grepl("4h", archivo)) {
+      if (grepl("BG", archivo)) {
+        condiciones <- c(condiciones, "BG_4h")
+      } else if (grepl("RPMI", archivo)) {
+        condiciones <- c(condiciones, "RPMI_4h")
+      }
+    } else if (grepl("d6", archivo)) {
+      if (grepl("BG", archivo)) {
+        condiciones <- c(condiciones, "BG_d6")
+      } else if (grepl("RPMI", archivo)) {
+        condiciones <- c(condiciones, "RPMI_d6")
+      }
+    } else {
+      condiciones <- c(condiciones, "Unknown")
+    }
+  }
+}
+```
+
+Para guardar los tipos de muestras que tenemos, según el estímulo y hora creamos un samplemetadata, que ayude a organizar y clasificar las muestras.
+
+```{r}
+samplesMetadata <- data.frame(
+  Sample.ID = paste(condiciones, muestras, sep = "_"),
+  Sample = muestras,
+  Treatment = ifelse(grepl("LPS", condiciones), "LPS", 
+                     ifelse(grepl("BG", condiciones), "BG", 
+                            ifelse(grepl("RPMI", condiciones), "RPMI", "Unknown"))),
+  Time = ifelse(grepl("24h", condiciones), "24h", 
+                ifelse(grepl("4h", condiciones), "4h", 
+                       ifelse(grepl("T0", condiciones), "0h", 
+                              ifelse(grepl("d6", condiciones), "d6", "Unknown"))))
+)
+
+# Asegurar que los Sample.ID sean únicos
+samplesMetadata$Sample.ID <- make.unique(samplesMetadata$Sample.ID)
+
+# Asignar el Sample.ID como rownames
+rownames(samplesMetadata) <- samplesMetadata$Sample.ID
+
+# Validar los datos
+samplesMetadata %>% head()
+
+```
+
+Teniendo en cuenta que el objetivo del análisis es estudiar el comportamiento de las diferentes muestras a el tratamiento, creamos la columna condición que almacenara el estado de las muestras según el tipo y tratamiento. Para esto solo debemos unir los dos estados con ayuda de la función mútate.
+
+```{r}
+samplesMetadata <- samplesMetadata %>%
+  mutate(conditions = paste(Treatment, Time, sep = "_"))
+
+# Validar los cambios
+samplesMetadata %>% head()
+```
+
+Por ultimo se crea la matriz de exprecion fianl con todas las muestras y sus estados.
+
+```{r warning=FALSE}
+# Crear la matriz de expresión final
+expresion_final <- data.frame(feature_id = unique(unlist(lapply(expresion_data, function(x) x$feature_id))))
+
+# Agregar los valores de expresión por cada muestra y condición
+for (i in 1:length(expresion_data)) {
+  # Extraer los datos para cada archivo
+  data <- expresion_data[[i]]
+  
+  # Crear el nombre de la columna correspondiente con la condición y la muestra
+  nombre_columna <- paste(condiciones[i], muestras[i], sep = "_")
+  
+  # Unir los valores de expresión con la tabla de genes
+  expresion_final <- merge(expresion_final, data[, c("feature_id", "unique_hits")], by = "feature_id", all.x = TRUE)
+  
+  # Renombrar la columna con el nombre de la muestra + condición
+  colnames(expresion_final)[ncol(expresion_final)] <- nombre_columna
+}
+
+# Ver las primeras filas de la matriz final
+head(expresion_final)
+```
+
+# Limpieza de la matriz de exprecion.
+
+Eliminamos todos los genes (filas) que no tengan expresión en ninguna de las muestras (columnas)
+
+```{r}
+# Crear la matriz de expresión final como rawCounts
+rawCounts <- expresion_final[, -1]  # Eliminamos la columna feature_id
+rownames(rawCounts) <- expresion_final$feature_id
+
+# Mostrar la matriz de expresión (rawCounts)
+rawCounts %>% head()
+```
+
+```{r}
+message(
+  ">>> % of genes with no expression in any sample: ", 
+  ((sum(rowSums(rawCounts == 0) == ncol(rawCounts)) / nrow(rawCounts)) * 100) %>%
+    round(2)
+)
+rawCounts <- rawCounts[rowSums(rawCounts == 0) != ncol(rawCounts), ]
+rawCounts <- rawCounts[rowSums(rawCounts) > 1, ]
+
+```
+
+Con ayuda de la herramienta filterByExpres, se filtran los genes mas significativos .
+
+```{r}
+# Definir los grupos experimentales basados en los metadatos
+groups <- samplesMetadata$Treatment
+
+# Aplicar filterByExpr para identificar los genes más significativos
+genes.to.keep <- filterByExpr(rawCounts, group = groups)
+
+# Filtrar la matriz rawCounts con los genes seleccionados
+rawCounts.filtered <- rawCounts[genes.to.keep, ]
+
+# Mostrar un mensaje con la cantidad de genes retenidos
+message(
+  "Genes retenidos después del filtrado: ", 
+  nrow(rawCounts.filtered), 
+  " de ", 
+  nrow(rawCounts)
+)
+
+```
+
+Calcula la suma de los niveles de expresión para cada gen en el conjunto de datos `rawCounts.filtered` para visualizar la distribucion de los datos. Este porceso es importante pra la vizualizacion de datos atipicos, evaluar la normalizacion de los datos, comprender su variabilidad y detectar patrone sinesperados.
+
+```{r}
+# Calcular la suma por fila (nivel de expresión total por gen)
+gene_expression_sums <- rowSums(rawCounts.filtered)
+
+# Crear un histograma para visualizar la distribución de la expresión
+ggplot(data = data.frame(Expression = gene_expression_sums), aes(x = Expression)) +
+  geom_histogram(
+    bins = 50, 
+    fill = "skyblue", 
+    color = "black", 
+    alpha = 0.7
+  ) +
+  scale_x_log10() + # Escala logarítmica si los valores tienen un rango amplio
+  labs(
+    title = "Distribución de la expresión génica",
+    x = "Suma de niveles de expresión (log10)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+
+```
+
+#Normalizacion de los datos.
+
+Para la normalizacion de los datos se usa el método CMP, la cual ajusta los conteos de reads de cada gen dividiéndolos por el número total de reads en la muestra (en millones) y multiplicándolos por un factor de escala. Esto permite comparar la expresión génica entre muestras con diferentes profundidades de secuenciación. Para mejorar la distribución de los datos también aplicamos logaritmo con el fin de comparar la distribución resultante de los datos.
+
+```{r}
+
+# Normalización sin filtro previo
+cpm_data <- cpm(rawCounts)
+log_cpm_data <- cpm(rawCounts, log = TRUE)
+
+# Normalización con genes filtrados
+cpm_filt_data <- cpm(rawCounts.filtered)
+log_cpm_filt_data <- cpm(rawCounts.filtered, log = TRUE)
+
+```
+
+```{r}
+plotDensities2 <- function(
+  matrix, 
+  color.by = NULL,
+  title = "", 
+  xlab = "",
+  ylim = 0.27,
+  cols = NULL, 
+  cutoff = NULL
+) {
+  nsamples <- ncol(matrix)
+  plot(density(matrix[, 1]), col = cols[1], 
+       lwd = 2, las = 1, ylim = c(0, ylim), main = "", xlab = "")
+  grid()
+  title(main = title, xlab = xlab)
+  if (!is.null(cutoff)) abline(v = cutoff, lty = 3)
+  for (i in 2:nsamples){
+    den <- density(matrix[, i])
+    lines(den$x, den$y, col = cols[i], lwd = 2)
+  }
+}
+```
+
+Durante este porceso se puede concluir que los datos cuyo comportamiento se asemejan mas a un anormal con los normalizados con CMP y luego son transformados logaritmicamente (logCPMs after filtering)
+
+```{r}
+par(mfrow = c(2, 2), mar = c(4.1, 4.1, 1.4, 1.8), mgp = c(2.1, 1, 0))
+## CPMs
+plotDensities2(
+  cpm_data, title = "A. CPMs before filtering",# ylim = 0.55,
+  xlab = "CPM", cols = color.list()
+)
+plotDensities2(
+  cpm_filt_data, title = "B. CPMs after filtering",
+  xlab = "CPM", cols = color.list()
+)
+## logCPMs
+plotDensities2(
+  log_cpm_data, title = "C. logCPMs before filtering",# ylim = 0.55,
+  xlab = "logCPM", cols = color.list()
+)
+plotDensities2(
+  log_cpm_filt_data, title = "D. logCPMs after filtering",
+  xlab = "logCPM", cols = color.list()
+)
+```
+
+```{r}
+# Crear objeto DGEList para datos filtrados
+dge_filtered <- DGEList(counts = rawCounts.filtered)
+dge_filtered <- calcNormFactors(dge_filtered, method = "TMM")
+
+# Normalización TMM para datos filtrados
+cpm_tmm_filt <- cpm(dge_filtered, normalized.lib.sizes = TRUE)
+log_cpm_tmm_filt <- cpm(dge_filtered, normalized.lib.sizes = TRUE, log = TRUE)
+
+print("Datos normalizados (filtrados):")
+log_cpm_tmm_filt %>% head()
+
+```
+
+La *normalización TMM* se centra en identificar un subconjunto de genes que se consideran no diferencialmente expresados entre las muestras. Este factor de escala se utiliza para ajustar los conteos de reads de cada muestra, lo que permite una comparación más precisa de los niveles de expresión génica entre muestras.
+
+El grafico podemos vesualizar la distrubucion de los datos por muetra
+
+```{r}
+colors <- rainbow(ncol(log_cpm_tmm_filt))
+
+# Diagrama de densidad
+plot(
+  density(log_cpm_tmm_filt[, 1], na.rm = TRUE), 
+  col = colors[1], 
+  lwd = 2, 
+  main = "Distribución de densidad de log-CPM TMM Filtrado",
+  xlab = "Log-CPM",
+  ylab = "Densidad"
+)
+
+# Agregar densidades para cada muestra
+for (i in 2:ncol(log_cpm_tmm_filt)) {
+  lines(density(log_cpm_tmm_filt[, i], na.rm = TRUE), col = colors[i], lwd = 2)
+}
+
+# Agregar una leyenda
+legend(
+  "topright", 
+  legend = colnames(log_cpm_tmm_filt), 
+  col = colors, 
+  lwd = 2, 
+  cex = 0.6,
+  ncol = 2, # Ajustar para que ocupe menos espacio
+  title = "Muestras"
+)
+```
+
+# PCA (Análisis de componentes principales)
+
+Se escala los datos de expresión génica (que ya han sido transformados logarítmicamente y filtrados) para que todos los genes tengan la misma importancia en el análisis de componentes principales. Esto se hace centrando los datos (restando la media) y escalándolos (dividiendo por la desviación estándar) antes de aplicar prcomp(). El resultado, PCA.scaled, contiene los resultados del PCA realizado sobre los datos escalados.
+
+```{r, eval = FALSE}
+plotPCA <- function(
+  pcaObject, col.points, shape.points = NULL, palette,
+  legend.col, point.size = 3, title = "", pcs = c(1, 2)
+) {
+  ## Extraer la varianza explicada por cada componente principal
+  variance <- round(factoextra::get_eigenvalue(pcaObject)[pcs, 2], 1)
+  
+  ## Extraer las componentes principales del objeto PCA
+  pc1 <- pcaObject$x[, pcs[1]]
+  pc2 <- pcaObject$x[, pcs[2]]
+  
+  ## Crear el gráfico con ggplot2
+  p <- ggplot() +
+    geom_point(aes(
+      x = pc1,
+      y = pc2,
+      color = col.points,
+      shape = shape.points
+    ), size = point.size) +
+    scale_color_manual(values = palette) +
+    labs(
+      title = title,
+      x = paste0("PC", pcs[1], " (", variance[1], "%)"),
+      y = paste0("PC", pcs[2], " (", variance[2], "%)"),
+      color = legend.col
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+      legend.position = "right"
+    )
+  
+  return(p)
+}
+
+```
+
+```{r}
+PCA.scaled <- prcomp(scale(t(log_cpm_tmm_filt)))
+```
+
+este gráfico PCA revela que la variabilidad en la expresión génica está más relacionada con la réplica que con la condición experimental. Tambien facilita observar la visualizacion entre las donsiciones de casa muestras .
+
+```{r}
+p1 <- plotPCA(
+  PCA.scaled, col.points = as.factor(samplesMetadata$conditions),
+  palette = color.list(), 
+  legend.col = "Condition",
+  title = "PCA by condition"
+)
+print(p1)
+
+```
+
+La segunda PCA muestra una separación parcial entre los grupos de tratamiento BG y RPMI, lo que sugiere que el tratamiento tiene un impacto en la expresión génica. El grupo "Unknown" o no tratados muestra mayor superposición con los otros grupos debido a que solos e encuentrane n un punto del plano.
+
+```{r}
+p3 <- plotPCA(
+  PCA.scaled, col.points = as.factor(samplesMetadata$Treatment),
+  palette = color.list(),
+  legend.col = "Treatmen",
+  title = "PCA by treatment"
+)
+print(p3)
+```
+
+En esta PCA vemos como se compartan segun la hora del tratamiento y se puede distingui se forma sencilla el comportamiento entre las muestras segun la hora en la que le aplicaron el tratamiento.
+
+```{r}
+p4 <- plotPCA(
+  PCA.scaled, 
+  col.points = as.factor(samplesMetadata$Time),
+  palette = color.list(),
+  legend.col = "Replicate",
+  title = "PCA by replicate"
+)
+print(p4)
+
+```
+
+```{r}
+factoextra::fviz_eig(PCA.scaled) + ggtitle("Explained variance") + 
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+Identifica los 10 genes que más y menos contribuyen a cada uno de los dos primeros componentes principales de un análisis PCA escalado. El resultado es una matriz donde cada columna representa un componente principal (PC1 o PC2), y las filas contienen los nombres de los 10 genes con mayor y menor contribución a ese componente. Esto es útil para entender qué genes son los más importantes para la separación de las muestras en el espacio de los componentes principales y, por lo tanto, qué genes podrían estar impulsando las diferencias observadas entre las muestras.
+
+```{r}
+mm.scaled <- PCA.scaled$rotation[, 1:2] %>% apply(
+  2, \(x) {
+    c(
+      names(x)[order(x, decreasing = T)] %>% head(10),
+      names(x)[order(x, decreasing = F)] %>% head(10)
+    )
+  }
+)
+mm.scaled %>% head()
+```
+
+```{r}
+log_cpm_filt_data[mm.scaled[1:5, 1], ] %>% t() %>% summary()
+```
+
+Calcular las distancias entre muestras es un paso importante en el análisis de datos de RNA-Seq que permite visualizar la similitud entre muestras, evaluar la calidad de los datos, realizar PCA y clustering.
+
+```{r}
+sampleDists <- dist(t(log_cpm_tmm_filt), method = "euclidean") 
+```
+
+# Definition of contrasts
+
+```{r}
+design <- model.matrix(~ 0 + conditions, data = samplesMetadata)
+colnames(design) <- colnames(design) %>% str_remove("Condition")
+
+```
+
+```{r}
+# 2. Ajustar el modelo lineal (igual que antes)
+fit <- lmFit(log_cpm_tmm_filt, design)
+
+# 3. Ajustar los contrastes
+
+cont.matrix <- makeContrasts(
+    # Ejemplo de contrastes:
+    Unknown_0hvs_BG_4h = conditionsUnknown_0h - conditionsBG_4h,
+    Unknown_0hvs_BG_24h = conditionsUnknown_0h - conditionsBG_24h,
+    Unknown_0hvs_RPMI_4h = conditionsUnknown_0h - conditionsRPMI_4h,
+    Unknown_0hvs_RPMI_24h = conditionsUnknown_0h - conditionsRPMI_24h,
+   
+    levels = design
+)
+
+fit.cont <- contrasts.fit(fit, cont.matrix)
+
+# 4. Análisis de expresión diferencial con los contrastes (igual que antes)
+ebayes_fit <- eBayes(fit.cont)
+
+# 5. Tabla de resultados para CADA contraste
+# Puedes usar un bucle para obtener los resultados de cada contraste:
+
+contrast_names <- colnames(cont.matrix) # Obtener los nombres de los contrastes
+
+# Crear una lista para almacenar los data frames de resultados
+results_list <- list()
+
+
+```
+
+## El LogFC (logaritmo en base 2 del cambio de plegamiento)
+
+Es una medida de la magnitud del cambio en la expresión de un gen entre dos condiciones o grupos. Se calcula como el logaritmo en base 2 de la relación de la expresión del gen en una condición dividida por la expresión en la otra condición.
+
+Importancia del LogFC:
+
+Magnitud del cambio: El LogFC proporciona una medida cuantitativa de cuánto ha cambiado la expresión de un gen. Un LogFC de 1 significa que la expresión del gen se ha duplicado en una condición en comparación con la otra, mientras que un LogFC de -1 significa que la expresión se ha reducido a la mitad. Signo del cambio: El signo del LogFC indica la dirección del cambio. Un LogFC positivo significa que el gen está más expresado en la condición de interés, mientras que un LogFC negativo significa que está menos expresado. Relevancia biológica: El LogFC se utiliza a menudo para determinar la relevancia biológica de los cambios en la expresión génica. Un cambio pequeño en la expresión puede ser estadísticamente significativo, pero no necesariamente biológicamente relevante. El LogFC ayuda a identificar los genes con cambios de expresión lo suficientemente grandes como para ser considerados importantes. En este código, el LogFC se utiliza para filtrar los DEGs y para ordenarlos en la tabla de resultados. El umbral de LogFC de 1 (o -1) se utiliza comúnmente para seleccionar genes con cambios de expresión moderados o grandes.
+
+```{r}
+# Crear listas para almacenar los data frames de resultados por contraste
+results_list_logFC <- list()  # Lista para DEGs filtrados por logFC > 1
+results_list_both <- list()   # Lista para DEGs filtrados por ambos criterios
+#deg.contr <- topTable(fit.cont, sort.by = "logFC", n = Inf)
+#deg.contr %>% head()
+
+for (contrast in contrast_names) {
+    results <- topTable(ebayes_fit, coef = contrast, adjust.method = "BH", number = Inf)
+
+    # Convertir rownames a columna (feature_id)
+    results$feature_id <- rownames(results)
+    rownames(results) <- NULL
+
+    # Filtrar los resultados solo por logFC > 1
+    degs_logFC <- results %>% filter(logFC > 1)
+
+    # Filtrar los resultados por ambos criterios
+    padj_threshold <- 0.05
+    logFC_threshold <- 1
+
+    degs_both <- results %>%
+        filter(adj.P.Val < padj_threshold, abs(logFC) > logFC_threshold)
+
+    cat("\nResultados para el contraste:", contrast, "(solo logFC > 1)\n")
+    #print(degs_logFC)
+
+    cat("\nResultados para el contraste:", contrast, "(ambos criterios)\n")
+    #print(degs_both)
+
+    # Guardar los data frames de resultados en las listas POR CONSTRASTE
+    results_list_logFC[[contrast]] <- degs_logFC
+    results_list_both[[contrast]] <- degs_both
+}
+
+# Ahora tienes cuatro listas:
+# - results_list_logFC_contrast: Contiene los data frames de resultados filtrados solo por logFC > 1, agrupados por contraste
+# - results_list_both_contrast: Contiene los data frames de resultados filtrados por ambos criterios, agrupados por contraste
+
+```
+
+Para vizualiza los el filtro de los datos segun LogFC significativo, se realizo un Volcanoplot por contraste.
+
+```{r}
+# Define el corte de logFC
+logfc.cutoff <- 1
+
+# Lista para guardar los gráficos
+plot_list <- list()
+
+# Iterar sobre los contrastes para generar volcanoplots
+for (contrast in names(results_list_logFC)) {
+  # Extraer los datos del contraste actual
+  degs_logFC <- results_list_logFC[[contrast]]
+
+  if (nrow(degs_logFC) > 0) {
+    # Crear columna 'Significant' para categorizar los genes
+    degs_logFC <- degs_logFC %>%
+      mutate(
+        SYMBOL = feature_id,  # Asegurar que se incluye la columna SYMBOL
+        Significant = case_when(
+          adj.P.Val <= 0.05 & logFC >= logfc.cutoff ~ "Up-regulated",
+          adj.P.Val <= 0.05 & logFC <= -logfc.cutoff ~ "Down-regulated",
+          TRUE ~ "Non-significant"
+        ) %>% factor(levels = c("Up-regulated", "Down-regulated", "Non-significant"))
+      )
+
+    # Generar el volcanoplot
+    p <- ggplot(degs_logFC, aes(x = logFC, y = -log10(adj.P.Val), color = Significant)) +
+      geom_point(alpha = 0.5) +
+      geom_vline(xintercept = logfc.cutoff, color = "red", linetype = "dashed") +
+      geom_vline(xintercept = -logfc.cutoff, color = "red", linetype = "dashed") +
+      geom_hline(yintercept = -log10(0.05), color = "red", linetype = "dashed") +
+      scale_color_manual(values = c("#a83c32", "#3a6691", "#dbd9d9")) +
+      ggtitle(paste(contrast)) +
+      theme_classic() +
+      theme(
+        plot.title = element_text(face = "bold", hjust = 0.6),
+        legend.title = element_blank()
+      ) +
+      labs(x = "Log-Fold-Change", y = "Log10-Adj-P-Value")
+
+    # Guardar el gráfico en la lista
+    plot_list[[contrast]] <- p
+
+  } else {
+    cat("\nNo hay genes significativos para el contraste:", contrast, "\n")
+  }
+}
+
+# Combinar los gráficos en una matriz 2x2 usando patchwork
+if (length(plot_list) > 0) {
+  combined_plot <- wrap_plots(plot_list, ncol = 2, nrow = 2)
+  print(combined_plot)
+} else {
+  cat("\nNo se generaron gráficos significativos.\n")
+}
+
+```
+
+# Enrichment analysis
+
+## GO (Gene Ontology)
+
+análisis de enriquecimiento de genes GO (Gene Ontology), ( [GO](https://geneontology.org/))para identificar los términos GO sobrerrepresentados en conjuntos de genes diferencialmente expresados (DEGs) en diferentes contrastes. El análisis de enriquecimiento GO es una herramienta valiosa para interpretar los resultados del análisis de expresión diferencial. Permite identificar los procesos biológicos, funciones moleculares y componentes celulares que están sobrerrepresentados en un conjunto de genes diferencialmente expresados. Esta información puede proporcionar información valiosa sobre los mecanismos biológicos que están siendo afectados por el tratamiento o condición experimental estudiada
+
+```{r}
+## GOterms Biological Process (BP) usando enrichGO
+
+ora_go_results <- list()
+
+for(contrast in names(results_list_logFC)){
+    gene_list <- results_list_logFC[[contrast]]$feature_id # Usar la columna SYMBOL
+
+    ego <- enrichGO(gene = gene_list,
+                   OrgDb = org.Hs.eg.db,
+                   keyType = "ENSEMBL", # Especificar que los genes son símbolos
+                   ont = "BP", # Procesos biológicos
+                   pAdjustMethod = "BH",
+                   pvalueCutoff = 0.05,
+                   qvalueCutoff = 0.05,
+                   readable = TRUE) # Convierte los IDs a símbolos para facilitar la interpretación
+
+    ora_go_results[[contrast]] <- ego
+}
+```
+
+```{r}
+# Visualización de resultados de ORA GO
+for(contrast in names(ora_go_results)){
+    cat("\n==== Visualización de resultados ORA - GO BP para contraste:", contrast, "====\n")
+    ego <- ora_go_results[[contrast]]
+    if (!is.null(ego)) { # Verifica si hay resultados para el contraste
+        print(dotplot(ego, showCategory=10)) # Muestra los 10 términos GO más significativos
+        print(cnetplot(ego, categorySize="pvalue", showCategory = 5)) # Muestra la red gen-término
+    } else {
+        print("No significant GO terms found for this contrast.")
+    }
+}
+```
+
+Por último para este análisis de hizo un histograma que ayudara a resumir cuales son los genes más significativos y su origen según el contraste definido.
+
+```{r}
+# Extraer los resultados en un solo data frame
+go_results_df <- do.call(rbind, lapply(names(ora_go_results), function(contrast) {
+  res <- ora_go_results[[contrast]]
+  if (!is.null(res) && nrow(as.data.frame(res)) > 0) {
+    df <- as.data.frame(res)
+    df$Contrast <- contrast
+    return(df)
+  } else {
+    return(NULL)
+  }
+}))
+
+# Si hay resultados, graficar
+if (!is.null(go_results_df)) {
+  
+  # Seleccionar los términos más enriquecidos por contraste
+  go_results_df <- go_results_df %>%
+    group_by(Contrast) %>%
+    top_n(-10, p.adjust) %>%   # Selecciona los 10 términos más significativos por contraste
+    ungroup()
+  
+  # Crear el barplot
+  ggplot(go_results_df, aes(x = reorder(Description, -p.adjust), y = -log10(p.adjust), fill = Contrast)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    coord_flip() +
+    labs(title = "Top 10 GO BP Terms Enriched per Contrast",
+         x = "GO Term",
+         y = "-log10(p.adjust)") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+} else {
+  print("No hay términos de GO significativamente enriquecidos.")
+}
+```
+
+#KKG [KEGG](https://www.genome.jp/kegg/)
+
+## ORA-KEGG (Kyoto Encyclopedia of Genes and Genomes).
+
+Análisis de enriquecimiento de vías KEGG (Kyoto Encyclopedia of Genes and Genomes) para identificar las vías KEGG sobrerrepresentadas en conjuntos de genes diferencialmente expresados (DEGs) en diferentes contrastes. Esta información puede ser utilizada para comprender mejor los mecanismos biológicos y las vías de señalización que están siendo afectadas por el tratamiento o condición experimental estudiada. La conversión de IDs de Ensembl a Entrez IDs es un paso necesario porque enrichKEGG() requiere Entrez IDs.
+
+```{r}
+# Inicializar lista para guardar resultados de ORA-KEGG
+ora_kegg_results <- list()
+
+# Iterar sobre todos los contrastes en results_list_logFC
+for (contrast in names(results_list_logFC)) {
+    # Extraer la lista de genes del contraste actual
+    gene_list <- results_list_logFC[[contrast]]$feature_id  # Identificadores ENSEMBL
+    
+    # Convertir de ENSEMBL a ENTREZ IDs (requerido por enrichKEGG)
+    entrez_df <- bitr(gene_list, fromType = "ENSEMBL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+    
+    # Realizar el análisis de enriquecimiento KEGG
+    kegg <- enrichKEGG(gene         = entrez_df$ENTREZID,
+                       organism     = "hsa",
+                       pvalueCutoff = 0.05,
+                       pAdjustMethod = "BH",
+                       qvalueCutoff = 0.05)
+    
+    # Guardar los resultados en la lista
+    ora_kegg_results[[contrast]] <- kegg
+}
+
+# Mostrar los resultados de ORA KEGG para cada contraste
+#for (contrast in names(ora_kegg_results)) {
+#    cat("\n==== ORA - KEGG Results for contrast:", contrast, "====\n")
+#    if (!is.null(ora_kegg_results[[contrast]])) {
+#        print(head(as.data.frame(ora_kegg_results[[contrast]])))
+#    } else {
+#        cat("No significant KEGG terms found for this contrast.\n")
+#    }
+#}
+
+```
+
+```{r}
+# Visualización de los resultados
+for (contrast in names(ora_kegg_results)) {
+    cat("\n==== Visualización de ORA-KEGG para contraste:", contrast, "====\n")
+    
+    kegg <- ora_kegg_results[[contrast]]
+    
+    if (!is.null(kegg) && nrow(as.data.frame(kegg)) > 0) {
+        # 1. Gráfico de puntos (dotplot)
+        cat("Gráfico de puntos (dotplot):\n")
+        print(dotplot(kegg, showCategory = 10) + ggtitle(paste("Dotplot - KEGG:", contrast)))
+        
+        # 2. Gráfico de barras (barplot)
+        cat("Gráfico de barras (barplot):\n")
+        print(barplot(kegg, showCategory = 10) + ggtitle(paste("Barplot - KEGG:", contrast)))
+        
+    } else {
+        cat("No se encontraron términos KEGG significativos para este contraste.\n")
+    }
+}
+
+```
+
+# Conclusiones.
+
+*Teniendo en cuenta los resultados del enrriquesimiento en GO.*
+
+-   Sintratamiento_BG_4h = conditionsUnknown_0h - conditionsBG_4h Las muestras mas significativas se encuentrasn representadas en la diferenciacion Alpha-Beta de celulas T
+
+-   Sintratamiento_BG_24h = conditionsUnknown_0h - conditionsBG_24h. Las muestras mas significativas se encuentrasn representadas en la Phagocitosis.
+
+-   Sintratamiento_RPMI_4h = conditionsUnknown_0h - conditionsRPMI_4h. las muestra se encuentran reresentadas en la translacion citoplasmatica
+
+Sintratamiento_RPMI_24h = conditionsUnknown_0h - conditionsRPMI_24h. Las muestras se representan representadas en la translacion de linfocitos.
+
+*ORA-KEGG (Kyoto Encyclopedia of Genes and Genomes).*
+
+-   Sintratamiento_BG_4h = conditionsUnknown_0h - conditionsBG_4h Las muestras mas significativas se encuentrasn representadas en La vía "Cytokine-cytokine receptor interaction" parece ser la más significativa
+
+-   Sintratamiento_BG_24h = conditionsUnknown_0h - conditionsBG_24h. Las muestras mas significativas se encuentrasn representadas en La vía "Coronaviris desease" parece ser la más significativa
+
+-   Sintratamiento_RPMI_4h = conditionsUnknown_0h - conditionsRPMI_4h. Las muestra se encuentran reresentadas en la via de receptores de citocina.
+
+Sintratamiento_RPMI_24h = conditionsUnknown_0h - conditionsRPMI_24h. Las muestras mas significativas se encuentrasn representadas en La vía "Coronaviris desease" parece ser la más significativa sin embargo tambien esta altamente representado por la via de receptores de citocina.
+
+```{r paged.print=TRUE}
+packages_table <- data.frame(
+  Paquete = c("dplyr", "stringr", "edgeR", "limma", "org.Hs.eg.db", "AnnotationDbi",
+              "clusterProfiler", "fgsea", "biomaRt", "ggplot2", "ComplexHeatmap", "ggpubr", "RColorBrewer"),
+  Version = c(
+    as.character(packageVersion("dplyr")), # Convertir a character
+    as.character(packageVersion("stringr")),
+    as.character(packageVersion("edgeR")),
+    as.character(packageVersion("limma")),
+    as.character(packageVersion("org.Hs.eg.db")),
+    as.character(packageVersion("AnnotationDbi")),
+    as.character(packageVersion("clusterProfiler")),
+    as.character(packageVersion("fgsea")),
+    as.character(packageVersion("biomaRt")),
+    as.character(packageVersion("ggplot2")),
+    as.character(packageVersion("ComplexHeatmap")),
+    as.character(packageVersion("ggpubr")),
+    as.character(packageVersion("RColorBrewer"))
+  ),
+  Fuente = c(
+    "CRAN", "CRAN", "Bioconductor", "Bioconductor", "Bioconductor", "Bioconductor",
+    "Bioconductor", "CRAN", "Bioconductor", "CRAN", "Bioconductor", "CRAN", "CRAN"
+  ),
+  Ruta = c(
+    "https://cran.r-project.org/package=dplyr",
+    "https://cran.r-project.org/package=stringr",
+    "https://bioconductor.org/packages/edgeR",
+    "https://bioconductor.org/packages/limma",
+    "https://bioconductor.org/packages/org.Hs.eg.db",
+    "https://bioconductor.org/packages/AnnotationDbi",
+    "https://bioconductor.org/packages/clusterProfiler",
+    "https://cran.r-project.org/package=fgsea",
+    "https://bioconductor.org/packages/biomaRt",
+    "https://cran.r-project.org/package=ggplot2",
+    "https://bioconductor.org/packages/ComplexHeatmap",
+    "https://cran.r-project.org/package=ggpubr",
+    "https://cran.r-project.org/package=RColorBrewer"
+  )
+)
+
+# Unir Paquete y Versión en una nueva columna "Paquete: Versión"
+packages_table$Paquete_Version <- paste(packages_table$Paquete, ":", packages_table$Version)
+
+# Reordenar las columnas (opcional)
+packages_table <- packages_table[, c("Paquete_Version", "Fuente", "Ruta")]
+
+```
+
+```{r}
+library(kableExtra)
+
+# Crear la tabla
+styled_table <- packages_table %>%
+  knitr::kable(
+    caption = "Tabla de Paquetes y Versiones",
+    col.names = c("Paquete y Versión", "Fuente", "Ruta"),
+    align = "c" # Centra todas las columnas
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#0073C2") # Encabezado estilizado
+
+# Mostrar la tabla
+styled_table
+
+```
+
+
+
